@@ -1,0 +1,253 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+Participant Info <please fill out> 
+Name: Moritz Madern 
+Mail:moritz.madern@meduniwien.ac.at
+
+<br><br><br>
+
+## Setup
+
+```{r Load required packages and data, warning=FALSE, message=FALSE}
+
+## Load packages
+library(tidyverse)
+library(janitor)
+library(tableone)
+library(survival)
+library(ggsurvfit)
+library(knitr)
+library(grid)
+
+
+## Read in data
+df <- read.delim(file="../data/cleaned_data.csv", sep=",", header=TRUE)
+
+```
+
+
+```{r Define some variables etc}
+
+
+## Define relevant objects
+dict_drugs <- setNames(c("Clopidogrel", "Prasugrel", "Ticagrelor"),
+                       nm=c("B01AC04", "B01AC22", "B01AC24"))
+
+## Create variable time_to_event_years (existing column time_to_event is saved as time to event in days)
+df$time_to_event_years <- df$time_to_event/365.25
+
+
+## Create Column of inhibitors 
+df$drugname <- dict_drugs[df$inhibitor] 
+df$drugname <- dict_drugs[df$inhibitor] %>% factor(., levels=c("Clopidogrel", "Prasugrel", "Ticagrelor"))
+
+
+## Change class of some variables to the type that will be used in modeling
+df <- df %>% mutate(year_of_start = factor(as.character(year_of_start), levels=c("2020", "2021", "2022")))
+  
+
+```
+
+<br><br><br>
+
+## Descriptive Analysis: Tables
+
+Simple table giving an overview of distribution of the three treatment groups
+
+```{r Create descriptive table of distribution of the three treatment groups}
+
+## Create simple table
+tab_simple <- tabyl(df$drugname) %>%
+  rename(Drug = `df$drugname`) %>%
+  adorn_totals() %>%
+  mutate(percent = round(percent * 100, 1))
+print(tab_simple)
+
+
+```
+
+Table1 giving an overview of covariate distributions for adjustment:
+
+```{r Table1}
+
+
+## Create Table 1 dataframe with nicer names
+df_t1 <- df
+df_t1 <- dplyr::rename(
+  df_t1,
+  "Age (years)" = age_in_years,
+  "Length of hospital stay (days)" = days_in_hosp__hosp,
+  "Hospital days (eligibility period)" = days_in_hosp__eligibility,
+  "Number of comorbidities (hospital stay)" = number_com_ICD__hosp,
+  "Number of comorbidities (eligibility period)" = number_com_ICD__eligibility,
+  "Total drug redemptions" = total_redemptions__eligibility,
+  "Sex" = sex,
+  "Year of treatment start" = year_of_start
+)
+
+
+## Define continuous and categorial adjustment variables as well as the grouping variable. Then construct table of adjustment variables.
+cont_vars_t1 <- c(
+  "Age (years)",
+  "Length of hospital stay (days)",
+  "Hospital days (eligibility period)",
+  "Number of comorbidities (hospital stay)",
+  "Number of comorbidities (eligibility period)",
+  "Total drug redemptions"
+)
+cat_vars_t1 <- c(
+  "Sex", "Year of treatment start",
+  "A10A", "A10B", "B01", "R01", "R03",
+  "C01", "C02", "C03", "C07", "C08", "C09", "C10"
+)
+group_var <- "drugname"       
+
+
+## Define which variables should be summarized by median and IQR
+skewed_vars_t1 <- cont_vars_t1
+
+
+## Add attributes so that labels are nicer (Comment-AI: Asked how to add nicer labels)
+tab_table1 <- CreateTableOne(
+  vars = c(cont_vars_t1, cat_vars_t1),
+  strata = group_var,
+  data = df_t1,
+  factorVars = cat_vars_t1,
+  addOverall = TRUE,
+  test = FALSE
+)
+
+
+## Print table, and prepare input for kable
+tab_table1_print <- print(
+  tab_table1,
+  showAllLevels = TRUE,
+  nonnormal = skewed_vars_t1,
+  quote = FALSE,
+  noSpaces =FALSE
+)
+
+
+## Print via kable (nicer to look at)
+kable(tab_table1_print)
+
+```
+
+<br><br><br>
+
+## Descriptive Analysis: Kaplan Meier and reverse Kaplan-Meier
+
+```{r Kaplan Meier curves}
+
+
+## Fit overall KM + 95%CI for time until ACS recurrence or death
+Fig1 <- survfit2(Surv(time_to_event_years, last_status) ~ 1, df,  conf.int = 0.95) %>% 
+    ggsurvfit() + 
+    add_confidence_interval() +
+    add_risktable() + 
+    scale_ggsurvfit() + 
+    ylab("Probability of no event") + 
+    xlab("Years") + ggtitle("Figure1: Kaplan-Meier estimate (overall) of ACS recurrence or death") +
+    ylim(0.75,1)
+ggsave(
+  filename = "../output/figures/Fig1__DescriptiveAnalysis__KM_overall.pdf",
+  plot = grid::grid.draw(Fig1),
+  width = 8,
+  height = 6
+)
+
+
+## Fit overall reverse KM + 95 CI for time until censoring
+df$reverse_last_status <- ifelse(test = df$last_status==1, yes=0, no=1)
+Fig2 <- survfit2(Surv(time_to_event_years, reverse_last_status) ~ 1, df, conf.int = 0.95) %>% 
+    ggsurvfit() + 
+    add_confidence_interval() +
+    add_risktable() + 
+    scale_ggsurvfit() + 
+    ylab(ylab("Probability of follow-up >= t")) + 
+    xlab("Years") + ggtitle("Figure2: reverse Kaplan-Meier estimate (overall) of follow-up time")
+ggsave(
+  filename = "../output/figures/Fig2__DescriptiveAnalysis__reverseKM_overall.pdf",
+  plot = grid::grid.draw(Fig2),
+  width = 8,
+  height = 6
+)
+
+
+## Fit stratisfied reverse KM + 95 CI for time until censoring
+df$reverse_last_status <- ifelse(test = df$last_status==1, yes=0, no=1)
+Fig3 <- survfit2(Surv(time_to_event_years, reverse_last_status) ~ drugname, df, conf.int = 0.95) %>% 
+    ggsurvfit() + 
+    add_confidence_interval() +
+    add_risktable() + 
+    scale_ggsurvfit() + 
+    ylab(ylab("Probability of follow-up >= t")) + 
+    xlab("Years") + ggtitle("Figure3: stratisfied reverse Kaplan-Meier estimates of follow-up time")
+ggsave(
+  filename = "../output/figures/Fig3__DescriptiveAnalysis__reverseKM_stratified.pdf",
+  plot = grid::grid.draw(Fig3),
+  width = 8,
+  height = 8
+)
+
+
+## report median follow-up time (overall)
+rev_km_overall <- survfit2( Surv(time_to_event_years, reverse_last_status) ~ 1, df)
+table_reverse_km_overall <- summary(rev_km_overall)$table
+paste0("median follow-up time in years (overall): ", round(table_reverse_km_overall["median"], digits=2))
+
+
+## report median follow-up time (stratisfied)
+rev_km_stratisfied <- survfit2(Surv(time_to_event_years, reverse_last_status) ~ drugname, df)
+table_reverse_km_stratified <- summary(rev_km_stratisfied)$table
+paste0("median follow-up time in years (stratisfied by inhibitor): ")
+table_reverse_km_stratified[,"median"] %>% round(., digits=3)
+
+
+
+
+```
+
+
+The median follow-up time (overall) is
+`r round(as.numeric(table_reverse_km_overall["median"]), digits=2)` years.
+
+
+The median follow-up time in years, stratified by inhibitor (Clopidogrel, Prasugrel, Ticagrelor), is:
+`r table_reverse_km_stratified[,"median"] %>% round(., digits=3)`, respectively.
+
+
+
+
+<br><br><br>
+
+## Session Info
+
+
+
+```{r session info}
+
+## Remove redundant objects
+rm(list=c("df", "df_t1", "cat_vars_t1", "cont_vars_t1", 
+          "group_var", "skewed_vars_t1",  "rev_km_overall", "rev_km_stratified"))
+
+
+## Save image
+fname <- paste0("../data/Rsession_analysis_descriptive", Sys.Date(), ".RData")
+save.image(file = fname)
+
+
+## Print session info
+sessionInfo()
+
+```
+
+
+```{r}
+
+```
+
+

@@ -1,0 +1,124 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+
+Participant Info <please fill out> 
+Name: Moritz Madern 
+Mail:moritz.madern@meduniwien.ac.at
+
+
+
+<br><br><br><br><br><br>
+
+
+# Descriptive Analysis: Results
+
+
+
+
+
+
+```{r Load packages and results of descriptive analysis, warning=FALSE, echo=FALSE, message=FALSE}
+
+## Load required packages
+library(knitr)
+library(dplyr)
+
+
+## Load results
+load("../data/Rsession_analysis_descriptive2026-02-02.RData")
+
+```
+
+<br><br><br><br>
+
+## 1.
+
+Distribution of treatment groups across pooled index hospitalizations:
+
+```{r print simple table with frequencies of each treatment, warning=FALSE, echo=FALSE}
+
+
+## Print table
+kable(tab_simple)
+
+```
+
+<br><br><br><br>
+
+## 2.
+
+Summarized baseline characteristics:
+
+```{r print table1 with baseline characteristics, warning=FALSE, echo=FALSE}
+
+
+## Print table
+kable(tab_table1_print)
+
+```
+
+
+<br><br><br><br>
+
+## 3.
+
+Unstratified KM estimator with 95% CI for time until re-admission for ACS or death:
+
+
+```{r Print Figure 1, warning=FALSE, echo=FALSE}
+
+## Print result
+print(Fig1)
+
+```
+
+
+<br><br><br><br>
+
+## 4.
+
+Reverse KM estimator with 95% CI - stratified as well as overall/unstratisfied:
+
+
+```{r Print Figure 2 and 3, warning=FALSE, echo=FALSE}
+
+## Print results
+print(Fig2)
+print(Fig3)
+
+```
+
+
+```{r Report median follow-up time, warning=FALSE, echo=FALSE}
+
+
+## Report median follow-up time (overall)
+paste0("median follow-up time in years (overall): ", round(table_reverse_km_overall["median"], digits=2))
+
+
+## Report median follow-up time (stratisfied)
+paste0("median follow-up time in years (stratisfied by inhibitor): ")
+table_reverse_km_stratified[,"median"] %>% round(., digits=3)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,399 @@
+Participant Info <please fill out> 
+Name: Moritz Madern 
+Mail:moritz.madern@meduniwien.ac.at
+
+## Setup
+
+```{r Load required packages and data, warning=FALSE, message=FALSE}
+
+## Load packages
+library(tidyverse)
+library(janitor)
+library(tableone)
+library(survival)
+library(ggsurvfit)
+library(splines)
+library(nnet)
+
+
+## Read in data
+df <- read.delim(file="../data/cleaned_data.csv", sep=",", header=TRUE)
+
+```
+
+
+```{r Define some variables etc}
+
+
+## Define relevant objects
+dict_drugs <- setNames(c("Clopidogrel", "Prasugrel", "Ticagrelor"),
+                       nm=c("B01AC04", "B01AC22", "B01AC24"))
+
+## Create variable time_to_event_years (existing olumn time_to_event is saved as time to event in days)
+df$time_to_event_years <- df$time_to_event/365.25
+
+
+## Create Column of inhibitors (with names instead of ATC code)
+df$drugname <- dict_drugs[df$inhibitor] 
+df$drugname <- dict_drugs[df$inhibitor] %>% factor(., levels=c("Clopidogrel", "Prasugrel", "Ticagrelor"))
+
+
+## Change class of some variables to the type that will be used in modeling
+df <- df %>% mutate(year_of_start = factor(as.character(year_of_start), levels=c("2020", "2021", "2022")))
+df$sex <- factor(df$sex, levels=c("m", "f"))
+  
+
+```
+
+<br><br><br>
+
+## Main Analysis: unadjusted Kaplan-Meier Plot stratified by the three treatment groups (i.e. no covariate adjustment whatsoever)
+
+```{r}
+
+## Fit overall KM + 95%CI for time until ACS recurrence or death
+Fig4 <- survfit2(Surv(time_to_event_years, last_status) ~ drugname, df,  conf.int = 0.95) %>% 
+    ggsurvfit() + 
+    add_confidence_interval() +
+    add_risktable() + 
+    scale_ggsurvfit() + 
+    ylab("Probability of no event") + 
+    xlab("Years") + ggtitle("Figure4: stratified Kaplan-Meier estimate \n of ACS recurrence or death (unadjusted)") +
+    ylim(0.75,1)
+print(Fig4)
+ggsave(filename = "../output/figures/Fig4__MainAnalysis_stratifiedKM_unadjusted.pdf", plot=Fig4) 
+
+
+```
+
+
+Note: Fig4 shows unadjusted KM curves. The SAP here reads: "A Kaplan-Meier plot stratified by the three treatment groups will be created". Since there was no mention of "adjusted" or "IPTW-weighted", I figured it was the unadjusted KM curves that were desired.
+
+
+<br><br><br>
+
+## Main Analysis: Marginal Survival Curves + MRST using double-robust estimation 
+
+```{r Multinomial model for IPTW weights}
+
+
+## Find adequate transformations of adjustment covariates 
+
+
+# 1)
+df$age_in_years <- df$age_in_years # stays the same (continuous)
+# 2)
+df$sex <- df$sex # stays the same (binary)
+# 3)
+df$year_of_start <- df$year_of_start # stays the same (categorical)
+# 4)
+df$log_days_in_hosp__hosp <- log(df$days_in_hosp__hosp + 1) # log(x+1) transformation seems reasonable since right-skewed; (continuous)
+# 5)
+df$cut_days_in_hosp_eligibility <- cut(df$days_in_hosp__eligibility, # creates a separate category for 0 days in hospital during eligibility period (most cases!) which seems reasonable; (categorical)
+                                       breaks = c(0,1,5,10,max(df$days_in_hosp__eligibility)), include.lowest = TRUE,
+                                       right=FALSE) 
+# 6)
+df$cut_number_com_ICD__hosp <- cut(df$number_com_ICD__hosp, # creates a separate category for only one ICD code (minimal number) which seems reasonable; (categorical)
+                                   breaks=c(0,2,3,4, max(df$number_com_ICD__hosp)), include.lowest = TRUE,
+                                   right = FALSE)
+# 7) 
+df$cut_number_com_ICD__eligibility <- cut(df$number_com_ICD__eligibility, # creates a separate category for only 0 ICD codes (minimal number) which seems reasonable; (categorical)
+                                          breaks=c(0,1,2,max(df$number_com_ICD__eligibility)), include.lowest = TRUE,
+                                          right=FALSE)
+# 8)
+df$cut_total_redemptions__eligibility <- cut(df$total_redemptions__eligibility, # creates a separate category for only 0 redemtpions which seems reasonable; (categorical)
+                                             breaks=c(0,1,5,20,max(df$total_redemptions__eligibility)), include.lowest = TRUE,
+                                             right=FALSE)
+# 9) 
+# Binary variables for types of co-medication in eligibility period (A10A A10B B01 R01 R03 C01 C02 C03 C07 C08 C09 C10); (all binary)
+
+
+
+
+```
+
+
+Note: For many of the interger variables (e.g., number_com_ICD__hosp), I ultimately decided on categorical variable transformations that include a separate category for the lowest count possible. The idea behind this decision was the reasoning that a jump from 0 to 1 has a different meaning than e.g. a jump from 4 to 5 (the latter jump might be negligible). Further, I kept the number of categories small to ensure sufficient observations within each bin.
+
+
+```{r Fit a simplified multinomial logistic regression model}
+
+
+# ## Fit a simplified multinomial logistic regression model (Clopidogrel is reference/baseline level) just to test MLR modeling and predictions
+# mlr_fit <- nnet::multinom(formula = drugname ~ age_in_years + sex, data = df)
+# 
+# 
+# ## Check predictions for new ids (first one, then two)
+# df_new_patient <- data.frame(
+#   age_in_years = 65,
+#   sex = "m"
+# )
+# df_new_patients <- data.frame(
+#   age_in_years = c(65, 20),
+#   sex = c("m", "f")
+# )
+# predict(mlr_fit, newdata = df_new_patient, type = "probs")
+# predict(mlr_fit, newdata = df_new_patients, type = "probs") # first row: Probabilities for first patient; second row: Probabilities for second patient
+# 
+# 
+# ## Check if model predictions via predict() are the same as when calculated manually
+# X <- matrix(c(1, 65, 1), nrow=1)
+# m_mlr_coeff <- coefficients(mlr_fit)
+# eta <- X %*% t(m_mlr_coeff)
+# p_Clopidogrel = 1/(1 + sum(exp(eta)))
+# p_Clopidogrel
+# p_Prasugrel <- exp(eta[,"Prasugrel"])/(1 + sum(exp(eta)))
+# p_Prasugrel
+# p_Ticagrelor <- exp(eta[,"Ticagrelor"])/(1 + sum(exp(eta)))
+# p_Ticagrelor
+# 
+# 
+# ## Note: Both identical!
+# mlr_fit1 <- nnet::multinom(formula = drugname ~ splines::ns(df$age_in_years, knots = quantile(age_in_years, probs = c(0.333,0.67)))  + sex, data = df)
+# coefficients(mlr_fit)
+# mlr_fit2 <- nnet::multinom(formula = drugname ~ splines::ns(df$age_in_years, knots = quantile(df$age_in_years, probs = c(0.333,0.67)))  + sex, data = df)
+# coefficients(mlr_fit2)
+
+
+```
+
+
+```{r Fit the multinomial logistic regression model to obtain IPTW weights}
+
+
+## Fit the multinomial logistic regression model (Comment-AI: provided information on recommended package for MLR modeling)
+set.seed(123)
+mlr_fit <- nnet::multinom(formula = drugname ~ 
+                            splines::ns(age_in_years, knots = quantile(age_in_years, probs = c(0.333,0.67))) +
+                            sex +
+                            year_of_start +
+                            splines::ns(log_days_in_hosp__hosp, knots = quantile(log_days_in_hosp__hosp, probs = c(0.333,0.67))) +
+                            cut_days_in_hosp_eligibility +
+                            cut_number_com_ICD__hosp +
+                            cut_number_com_ICD__eligibility +
+                            cut_total_redemptions__eligibility +
+                            A10A + A10B + B01 + R01 + R03 + C01 + C02 + C03 + C07 + C08 + C09 + C10,
+                            data = df)
+
+
+## Predict probabilities for treatment with specific inhibitor for each patient. Then add those predictions to df
+df_prob_inhib <- as.data.frame(predict(mlr_fit, newdata = df, type = "probs")) %>% 
+                    rename(prob_Clopidogrel = Clopidogrel,
+                           prob_Prasugrel = Prasugrel,
+                           prob_Ticagrelor = Ticagrelor)
+df <- cbind(df, df_prob_inhib)
+
+
+
+## Calculate IPTW weights (both stabilized and unstabilized; I want to compare them)
+p_marginal <- prop.table(table(df$drugname)) # calculate marginal treatment probabilities (Comment-AI: AI helped me understand and use these stabilized weights)
+df <- df %>% mutate(IPTW_weight = case_when(
+                                      drugname == "Clopidogrel" ~ 1/prob_Clopidogrel,
+                                      drugname == "Prasugrel" ~ 1/prob_Prasugrel,
+                                      drugname == "Ticagrelor" ~ 1/prob_Ticagrelor
+                                  ),
+                    IPTW_stab_weight = case_when(
+                                      drugname == "Clopidogrel" ~ p_marginal["Clopidogrel"]/prob_Clopidogrel,
+                                      drugname == "Prasugrel"   ~ p_marginal["Prasugrel"]/prob_Prasugrel,
+                                      drugname == "Ticagrelor"  ~ p_marginal["Ticagrelor"]/prob_Ticagrelor
+                                  )
+                    )
+
+
+## Check the distribution of the weights (stabilized)
+Fig5 <- ggplot(data=df) +
+  geom_density(aes(x=IPTW_stab_weight, col=drugname)) + ggtitle("stabilized weights") + theme_bw()
+print(Fig5)
+ggsave(filename = "../output/figures/Fig5__MainAnalysis_Density_stabilized_weights.pdf", plot=Fig5) 
+
+
+## Check the distribution of the weights (normal/unstabilized)
+Fig6 <- ggplot(data=df) +
+  geom_density(aes(x=IPTW_weight, col=drugname)) + ggtitle("normal/unstabilized weights") + theme_bw()
+print(Fig6)
+ggsave(filename = "../output/figures/Fig6__MainAnalysis_Density_unstabilized_weights.pdf", plot=Fig6) 
+
+
+## Check summary of the weights (assesment: the weights are totally fine)
+summary(df$IPTW_weight)
+quantile(df$IPTW_weight, probs = c(0.95, 0.99))
+summary(df$IPTW_stab_weight)
+quantile(df$IPTW_stab_weight, probs = c(0.95, 0.99))
+
+
+```
+Interpretation of weights: They seem to be fine; i.e. there are no huge outliers due to extremely low estimated probabilities.
+
+
+```{r Fit a Cox model with weights}
+
+## Fit a Cox model without weights 
+# coxph_drugs <- survival::coxph(survival::Surv(time_to_event_years, event=last_status) ~ 
+#                                                         drugname +
+#                                                         splines::ns(age_in_years, knots = quantile(age_in_years, probs = c(0.333,0.67))) +
+#                                                         sex +
+#                                                         year_of_start +
+#                                                         splines::ns(log_days_in_hosp__hosp, knots = quantile(log_days_in_hosp__hosp, probs = c(0.333,0.67))) +
+#                                                         cut_days_in_hosp_eligibility +
+#                                                         cut_number_com_ICD__hosp +
+#                                                         cut_number_com_ICD__eligibility +
+#                                                         cut_total_redemptions__eligibility +
+#                                                         A10A + A10B + B01 + R01 + R03 + C01 + C02 + C03 + C07 + C08 + C09 + C10,
+#                                                    data=df) 
+
+
+## Fit weighted Cox model with weights derived from MLR model
+coxph_drugs_weighted <- survival::coxph(survival::Surv(time_to_event_years, last_status) ~ 
+                                                        drugname +
+                                                        splines::ns(age_in_years, knots = quantile(age_in_years, probs = c(0.333,0.67))) +
+                                                        sex +
+                                                        year_of_start +
+                                                        splines::ns(log_days_in_hosp__hosp, knots = quantile(log_days_in_hosp__hosp, probs = c(0.333,0.67))) +
+                                                        cut_days_in_hosp_eligibility +
+                                                        cut_number_com_ICD__hosp +
+                                                        cut_number_com_ICD__eligibility +
+                                                        cut_total_redemptions__eligibility +
+                                                        A10A + A10B + B01 + R01 + R03 + C01 + C02 + C03 + C07 + C08 + C09 + C10,
+                                        data = df,
+                                        weights = IPTW_stab_weight,
+                                        robust = TRUE, # note: when weights are used the default is TRUE anyway
+                                        x=TRUE) 
+
+
+## Check PH assumption via Schoenfeld residuals
+print(cox.zph(coxph_drugs_weighted))
+
+
+```
+
+Note: There is no indication of a violation of the proportional hazards assumption.
+
+```{r Create marginal survival curves via G computation}
+
+## Create counterfactual dataframes for each drug
+df_Clopidogrel <- df %>% mutate(drugname = factor(rep("Clopidogrel", nrow(df)), 
+                                                  levels=c("Clopidogrel", "Prasugrel", "Ticagrelor")))
+df_Prasugrel <- df %>% mutate(drugname = factor(rep("Prasugrel", nrow(df)), 
+                                                  levels=c("Clopidogrel", "Prasugrel", "Ticagrelor")))
+df_Ticagrelor <- df %>% mutate(drugname = factor(rep("Ticagrelor", nrow(df)), 
+                                                  levels=c("Clopidogrel", "Prasugrel", "Ticagrelor")))
+
+
+## Predict survival at all times for each of the three counterfactual dataframes
+survpred_Clopidogrel <- survfit(coxph_drugs_weighted, newdata = df_Clopidogrel, censor = FALSE)
+survpred_Prasugrel <- survfit(coxph_drugs_weighted, newdata = df_Prasugrel, censor = FALSE)
+survpred_Ticagrelor <- survfit(coxph_drugs_weighted, newdata = df_Ticagrelor, censor = FALSE)
+
+
+# Average over each individual
+marginal_survpred_Clopidogrel <- rowMeans(survpred_Clopidogrel$surv)
+marginal_survpred_Prasugrel <- rowMeans(survpred_Prasugrel$surv)
+marginal_survpred_Ticagrelor <- rowMeans(survpred_Ticagrelor$surv)
+
+
+## Plot marginal survival via base R plot functions
+# par(mfrow=c(1,1))
+# plot(y=marginal_survpred_Clopidogrel, x=survpred_Clopidogrel$time, col="red", type="n")
+# lines(marginal_survpred_Clopidogrel, x=survpred_Clopidogrel$time, col="red")
+# lines(marginal_survpred_Prasugrel, x=survpred_Prasugrel$time, col="green")
+# lines(marginal_survpred_Ticagrelor, x=survpred_Ticagrelor$time, col="blue")
+
+
+## Create dataframe for ggplotting and RMST calculation
+df_ggplot <- data.frame(drugname=rep(c("Clopidogrel", "Prasugrel", "Ticagrelor"), each=length(survpred_Clopidogrel$time)),
+                        time=c(survpred_Clopidogrel$time, survpred_Clopidogrel$time, survpred_Clopidogrel$time),
+                        survival=c(marginal_survpred_Clopidogrel, marginal_survpred_Prasugrel, marginal_survpred_Ticagrelor))
+df_ggplot$drugname <- factor(df_ggplot$drugname, levels=c("Clopidogrel", "Prasugrel", "Ticagrelor"))
+
+
+## Create ggplot and save it
+Fig7 <- ggplot(data=df_ggplot) +
+            geom_line(aes(x=time,y=survival, group=drugname, col=drugname)) +
+            theme_bw() +  ylab("Probability of no event") + 
+            xlab("Years") + ggtitle("Figure7: Marginal survival curves")
+ggsave(filename = "../output/figures/Fig7__MainAnalysis_marginalSurvival.pdf", plot=Fig7) 
+print(Fig7)
+  
+
+```
+
+
+```{r Calculate survival via adjustedCurves package}
+
+# adjcurve_standardization = adjustedCurves::adjustedsurv(data = df, variable = "drugname", 
+#                                                         ev_time = "time_to_event_years", event = "last_status", 
+#                                                         method = "direct", outcome_model = coxph_drugs_weighted, 
+#                                                         conf_int = FALSE)
+# 
+# plot(adjcurve_standardization, conf_int = TRUE, 
+#      custom_colors = c("red", "green","blue"),
+#      xlab = "Years", legend.title = "", ylim = c(0.75, 1))
+
+
+# note: This code produces the same curves as the code block above
+
+```
+
+
+```{r Calculate RMST at 3 years by manual integration via trapezoid rule}
+
+
+## Write function to compute RMST based on survival curve
+calc_RMST <- function(df_surv){
+  #trapz(df_surv$time, df_surv$survival) # from package pracma
+  sum(c(0, diff(df_surv$time)*(head(df_surv$survival, -1) + tail(df_surv$survival, -1))/2))
+}
+
+
+## Calculate RMST for each drug
+RMST_Clopidogrel <- df_ggplot %>% filter(drugname == "Clopidogrel") %>% calc_RMST() %>% round(., digits=4)
+RMST_Prasugrel <- df_ggplot %>% filter(drugname == "Prasugrel") %>% calc_RMST() %>% round(., digits=4)
+RMST_Ticagrelor <- df_ggplot %>% filter(drugname == "Ticagrelor") %>% calc_RMST() %>% round(., digits=4)
+df_res <- data.frame(drugname=c("Clopidogrel", "Prasugrel", "Ticagrelor"),
+                     RMST = c(RMST_Clopidogrel, RMST_Prasugrel, RMST_Ticagrelor))
+
+
+## Print results
+print(df_res)
+
+
+
+```
+
+Result: The estimated RMST for Clopidogrel: 2.5514; The estimated RMST for Prasugrel: 2.5976; The estimated RMST for Ticagrelor: 2.5629	
+
+
+
+
+
+<br><br><br>
+
+## Session Info
+
+
+
+```{r session info}
+
+
+## Remove redundant objects
+rm(list=c("df", "df_Clopidogrel", "df_ggplot", "df_Prasugrel", 
+          "df_prob_inhib", "df_Ticagrelor", "survpred_Clopidogrel", "survpred_Prasugrel", "survpred_Ticagrelor",
+          "marginal_survpred_Clopidogrel", "marginal_survpred_Prasugrel", "marginal_survpred_Ticagrelor",
+          "p_marginal"))
+
+
+## Save image
+fname <- paste0("../data/Rsession_analysis_main", Sys.Date(), ".RData")
+save.image(file = fname)
+
+
+## Print session info
+sessionInfo()
+
+```
+
+
+```{r}
+
+```
+

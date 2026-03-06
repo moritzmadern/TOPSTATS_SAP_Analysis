@@ -1,0 +1,127 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+
+Participant Info <please fill out> 
+Name: Moritz Madern 
+Mail:moritz.madern@meduniwien.ac.at
+
+
+
+<br><br><br><br><br><br>
+
+
+# Main Analysis: Results
+
+
+
+
+
+
+```{r Load packages and results of descriptive analysis, warning=FALSE, echo=FALSE, message=FALSE}
+
+## Load required packages
+library(knitr)
+library(dplyr)
+library(survival)
+
+
+## Load results
+load("../data/Rsession_analysis_main2026-02-02.RData")
+
+```
+
+<br><br><br><br>
+
+## 1.
+
+Unadjusted Kaplan-Meier curves stratified by the three treatment groups (The SAP reads: "A Kaplan-Meier plot stratified by the three treatment groups will be created". Since there was no mention of "adjusted" or "IPTW-weighted", I figured that the unadjusted KM curves were desired).
+
+```{r print Figure 4, warning=FALSE, echo=FALSE}
+
+
+## Print result
+print(Fig4)
+
+```
+
+
+<br><br><br><br>
+
+## 2.
+
+Distribution of weights calculated from multinomial logistic regression model:
+
+```{r print Figure 5 and 6, warning=FALSE, echo=FALSE}
+
+
+## Print result
+print(Fig5)
+print(Fig6)
+
+
+```
+
+Interpretation of weights: They seem to be fine; i.e. there are no huge outliers due to extremely low estimated probabilities.
+
+
+<br><br><br><br>
+
+## 3.
+
+
+Assessment of PH assumption via Schoenfeld residuals of Cox model:
+
+
+```{r Print Figure 1, warning=FALSE, echo=FALSE}
+
+## Print results
+res <- print(survival::cox.zph(coxph_drugs_weighted))
+
+```
+
+
+There is no indication of a violation of the proportional hazards assumption.
+
+
+<br><br><br><br>
+
+## 4.
+
+Marginal survival curves via double-robust estimation strategy:
+
+
+```{r Print Figure 7, warning=FALSE, echo=FALSE}
+
+## Print result
+print(Fig7)
+
+```
+
+Report RMST estimates calculated from marginal survival curves:
+
+```{r Print RMST, warning=FALSE, echo=FALSE}
+
+## Print table
+kable(df_res)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

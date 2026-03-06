@@ -1,0 +1,979 @@
+---
+title: "Preprocessing script"
+author: "Moritz Madern"
+output: html_document
+---
+
+Participant Info <please fill out> 
+Name: Moritz Madern 
+Mail:moritz.madern@meduniwien.ac.at
+
+
+
+```{r Load required packages etc , warning=FALSE, message=FALSE}
+
+## Load packages
+library(tidyverse)
+
+
+## Read in functions file
+source("functions.R")
+
+
+## Define auxillary variables
+v_ICD_ACS = read.delim("../data/ICD10forACS.csv", sep=",") %>% dplyr::pull(ICD10) # ICD10 codes denoting ACS
+v_MEL = c("DD050", "DD060", "XN120") #MEL codes denoting stent implant
+v_ATC = c("B01AC04", "B01AC22", "B01AC24") # ATC codes denoting the drugs of interest
+v_drugnames = c("clopidogrel", "prasugrel", "ticagrelor")
+
+
+```
+
+```{r Read in Data}
+
+## Read in data
+df_patients <- read.delim(file="../data/patients.csv", sep=",") %>% arrange(id)
+df_hospitalstay_stent <- read.delim(file="../data/hospitalstay_stent.csv", sep=",") %>% arrange(id)
+df_mel_stent <- read.delim(file="../data/mel_stent.csv", sep=",") %>% arrange(id)
+df_hospitalstay_all <- read.delim(file="../data/hospitalstay_all.csv", sep=",") %>% arrange(id)
+df_redemptions <- read.delim(file="../data/redemptions.csv", sep=",") %>% arrange(id)
+
+
+## View heads()
+head(df_patients)
+head(df_hospitalstay_stent)
+head(df_mel_stent)
+head(df_hospitalstay_all)
+head(df_redemptions)
+
+
+## Save id columns as character vectors
+df_patients$id <- as.character(df_patients$id)
+df_hospitalstay_stent$id <- as.character(df_hospitalstay_stent$id)
+df_mel_stent$id <- as.character(df_mel_stent$id)
+df_hospitalstay_all$id <- as.character(df_hospitalstay_all$id)
+df_redemptions$id <- as.character(df_redemptions$id)
+
+
+## 125000 patients at this point
+
+```
+
+```{r Filter for IDs that have had at least one hospitalization related to ACS}
+
+## Note: This initial filtering mainly aims to reduce data size
+
+
+## Find hospital stays with ACS diagnosis (AI helped to check correctness of code)
+df_hospitalstay_all <- df_hospitalstay_all %>%
+  mutate(
+    IsACS_hospitalstay = if_any(starts_with("diag"), function(x) x %in% v_ICD_ACS) # Comment-AI
+  )
+
+
+## Filter for ids with ACS diagnosis
+v_ids_with_ACS <- df_hospitalstay_all %>% filter(IsACS_hospitalstay) %>% pull(id) %>% unique()
+if(length(v_ids_with_ACS) > 0){
+  df_patients <- df_patients %>% dplyr::filter(id %in% v_ids_with_ACS)
+  df_hospitalstay_stent <- df_hospitalstay_stent %>% dplyr::filter(id %in% v_ids_with_ACS)
+  df_mel_stent <- df_mel_stent %>% dplyr::filter(id %in% v_ids_with_ACS)
+  df_hospitalstay_all <- df_hospitalstay_all %>% dplyr::filter(id %in% v_ids_with_ACS)
+  df_redemptions <- df_redemptions %>% dplyr::filter(id %in% v_ids_with_ACS)
+}
+
+
+## Remove redundant objects
+rm(list=c("v_ids_with_ACS"))
+
+
+## 54743 patients remain
+
+```
+
+Note: df_mel_stent (originally "mel_stent.csv") and df_hospitalstay_stent (originally "hospitalstay_stent.csv") still have unequal number of rows. Find those ids with stent entries that are exclusive to only one dataset. It seems that the corresponding hospital stays are missing in df_hospitalstay_stent because they extend beyond 31st December 2024. Since this concerns just two ids out of thousands, I will remove them (see code below). Maybe these ids would anyway disappear anyway after assessing inclusion + exclusion criteria!
+
+```{r Investigate incongruity of stent entries in df_hospitalstay_stent vs df_mel_stent and ultimately remove the corresponding ids}
+
+## Add unique stent ID to both df_hospitalstay_stent and df_mel_stent
+stopifnot(!any(is.na(df_hospitalstay_stent$stent_id)))
+stopifnot(!any(is.na(df_mel_stent$stent_id)))
+df_hospitalstay_stent$uniqueID <- paste0(df_hospitalstay_stent$id, "_", df_hospitalstay_stent$stent_id)
+df_mel_stent$uniqueID <- paste0(df_mel_stent$id, "_", df_mel_stent$stent_id)
+
+
+## Build intersection of unique stent IDs
+v_uniqueID_intersect <- base::intersect(df_hospitalstay_stent$uniqueID, df_mel_stent$uniqueID)
+
+
+## Filter for everything but the intersection (Comment-decision)
+df_hospitalstay_stent_delta <- df_hospitalstay_stent %>% filter(!(uniqueID %in% v_uniqueID_intersect)) # 0 rows
+df_mel_stent_delta <- df_mel_stent %>% filter(!(uniqueID %in% v_uniqueID_intersect)) # 2 rows -> 2 stent entries that are not in df_hospitalstay_stent
+
+
+## Extract the ids that are missing. Explore the respective entries in both dataframes
+delta_ids <- df_mel_stent_delta$id
+df_hospitalstay_stent_delta_ids <- df_hospitalstay_stent %>% filter(id %in% delta_ids)
+df_mel_stent_delta_ids <- df_mel_stent %>% filter(id %in% delta_ids)
+
+
+## Remove the corresponding ids in all dataframes
+if (length(delta_ids) > 0){
+  df_patients <- df_patients %>% dplyr::filter(!(id %in% delta_ids))
+  df_hospitalstay_stent <- df_hospitalstay_stent %>% dplyr::filter(!(id %in% delta_ids))
+  df_mel_stent <- df_mel_stent %>% dplyr::filter(!(id %in% delta_ids))
+  df_hospitalstay_all <- df_hospitalstay_all %>% dplyr::filter(!(id %in% delta_ids))
+  df_redemptions <- df_redemptions %>% dplyr::filter(!(id %in% delta_ids))
+}
+
+
+## Remove redundant objects
+remove(list=c("df_hospitalstay_stent_delta_ids", "df_mel_stent_delta_ids", "delta_ids", "df_mel_stent_delta", "v_uniqueID_intersect", "df_hospitalstay_stent_delta"))
+
+
+## 54741 patients remain
+
+```
+
+```{r Merge df_hospitalstay_stent and df_mel_stent}
+
+## First Check if df_hospitalstay_stent and df_mel_stent have the same unique stent ids
+stopifnot(all(df_hospitalstay_stent$uniqueID == df_mel_stent$uniqueID))
+head(df_hospitalstay_stent)
+head(df_mel_stent)
+
+
+## Merge to a single dataframe called df_stent
+df_stent <- cbind(df_hospitalstay_stent, df_mel_stent[,c("stent_date", "mel1", "mel2", "mel3", "mel4", "mel5", "mel6")])
+
+
+## Remove now redundant dataframes
+rm(list=c("df_hospitalstay_stent", "df_mel_stent"))
+
+```
+
+```{r Check number of remaining ids per dataframe}
+
+## Check frequency table of id frequencies per file
+sapply(X=list(df_patients=df_patients, 
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all, 
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% table() %>% table()
+       })
+
+
+## Check number of remaining ids per file
+sapply(X=list(df_patients=df_patients, 
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all, 
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% unique() %>% length()
+       })
+
+```
+
+```{r Filter out ids with missing age or sex}
+
+## Check summary of df_patients
+summary(df_patients)
+summary_df(df_patients)
+df_patients <- df_patients %>% filter(sex != "")
+
+
+## Check summary of df_stent
+summary(df_stent)
+summary_df(df_stent)
+
+
+## Check summary of df_hospitalstay_all
+summary(df_hospitalstay_all)
+summary_df(df_hospitalstay_all)
+
+
+## Check summary of df_hospitalstay_all
+summary(df_redemptions)
+summary_df(df_redemptions)
+
+
+## Specify remaining ids
+v_ids <- df_patients$id %>% unique()
+
+
+## Remove the corresponding ids in all dataframes
+if(length(v_ids) >0){
+  df_patients <- df_patients %>% dplyr::filter(id %in% v_ids)
+  df_stent <- df_stent %>% dplyr::filter(id %in% v_ids)
+  df_hospitalstay_all <- df_hospitalstay_all %>% dplyr::filter(id %in% v_ids)
+  df_redemptions <- df_redemptions %>% dplyr::filter(id %in% v_ids)
+}
+
+
+
+# Check frequency table of id frequencies per file
+sapply(X=list(df_patients=df_patients,
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all,
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% table() %>% table()
+       })
+
+
+## Check number of remaining ids per file
+sapply(X=list(df_patients=df_patients, 
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all, 
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% unique() %>% length()
+       })
+
+
+## Remove redundant objects 
+rm(list=c("v_ids"))
+
+
+## 54679 patients remain
+
+
+```
+
+```{r Filter out ids without stent surgery as defined by specific MEL codes (inclusion criterion 4)}
+
+## Find ids that obtained one of the relevant stent surgeries
+bool_keep <- (df_stent$mel1 %in% v_MEL) | (df_stent$mel2 %in% v_MEL) | (df_stent$mel3 %in% v_MEL) | (df_stent$mel4 %in% v_MEL) | (df_stent$mel5 %in% v_MEL) | (df_stent$mel6 %in% v_MEL)
+table(bool_keep)
+v_id_stents <- df_stent[bool_keep,"id"] %>% unique()
+length(v_id_stents)
+
+
+## Keep ids with stents
+if(length(v_id_stents)>0){
+  df_patients <- df_patients %>% dplyr::filter(id %in% v_id_stents)
+  df_stent <- df_stent %>% dplyr::filter(id %in% v_id_stents)
+  df_hospitalstay_all <- df_hospitalstay_all %>% dplyr::filter(id %in% v_id_stents)
+  df_redemptions <- df_redemptions %>% dplyr::filter(id %in% v_id_stents)
+}
+
+
+## Check frequency table of id frequencies per file
+sapply(X=list(df_patients=df_patients,
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all,
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% table() %>% table()
+       })
+
+
+## Check number of remaining ids per file
+sapply(X=list(df_patients=df_patients, 
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all, 
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% unique() %>% length()
+       })
+
+
+## Remove redundant variables
+rm(list=c("v_id_stents", "bool_keep"))
+
+
+## 29015 patients remain
+
+```
+
+```{r Filter out ids without a redemption for the relevant drugs as defined by ATC codes (related to Inclusion criterion 5)}
+
+
+## Find ids with redemption of one of the relevant drugs
+bool_keep <- df_redemptions$ATC %in% v_ATC
+table(bool_keep)
+v_id_ATC <- df_redemptions[bool_keep, "id"] %>% unique()
+
+
+## Keep ids with at least one of the drugs of relevance
+if(length(v_id_ATC)>0){
+  df_patients <- df_patients %>% dplyr::filter(id %in% v_id_ATC)
+  df_stent <- df_stent %>% dplyr::filter(id %in% v_id_ATC)
+  df_hospitalstay_all <- df_hospitalstay_all %>% dplyr::filter(id %in% v_id_ATC)
+  df_redemptions <- df_redemptions %>% dplyr::filter(id %in% v_id_ATC) 
+}
+
+
+## Check frequency table of id frequencies per file
+sapply(X=list(df_patients=df_patients,
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all,
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% table() %>% table()
+       })
+
+
+## Check number of remaining ids per file
+sapply(X=list(df_patients=df_patients, 
+              df_stent = df_stent,
+              df_hospitalstay_all = df_hospitalstay_all, 
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% unique() %>% length()
+       })
+
+
+## Remove redundant variables
+rm(list=c("v_id_ATC", "bool_keep"))
+
+
+# 26237 patients remain
+
+```
+
+```{r Merge df_hspitalstay_all and df_stent to create df_hospitalstay_merged}
+
+## Add stent_hospitalstay to df_stent
+df_stent$IsStent_hospitalstay <- TRUE
+
+
+## Replace diagnoses of "XXXX" with ""
+stopifnot( # Comment-AI: Catch potential problems
+  is.character(df_stent$diag1),
+  is.character(df_stent$diag2),
+  is.character(df_stent$diag3)
+)
+df_stent$diag1 <- ifelse(df_stent$diag1 == "XXXX", yes="", no =df_stent$diag1)
+df_stent$diag2 <- ifelse(df_stent$diag2 == "XXXX", yes="", no =df_stent$diag2)
+df_stent$diag3 <- ifelse(df_stent$diag3 == "XXXX", yes="", no =df_stent$diag3)
+stopifnot( # Comment-AI: Catch potential problems
+  !any(df_stent$diag1 == "XXXX", na.rm = TRUE),
+  !any(df_stent$diag2 == "XXXX", na.rm = TRUE),
+  !any(df_stent$diag3 == "XXXX", na.rm = TRUE)
+)
+
+
+## Create unique hospitalstay ids in both df_hospitalstay_all and df_stent
+stopifnot( # Comment-AI: Catch potential problems
+  !any(is.na(df_hospitalstay_all$id)),
+  !any(is.na(df_hospitalstay_all$cohosp_begin_date)),
+  !any(is.na(df_hospitalstay_all$cohosp_end_date)),
+  !any(is.na(df_stent$id)),
+  !any(is.na(df_stent$stent_begin_date)),
+  !any(is.na(df_stent$stent_end_date))
+)
+df_hospitalstay_all$id_beginDate_endDate <- paste0(df_hospitalstay_all$id, "_", 
+                                                   df_hospitalstay_all$cohosp_begin_date,"_",
+                                                   df_hospitalstay_all$cohosp_end_date, "_",
+                                                   df_hospitalstay_all$diag1, "_",
+                                                   df_hospitalstay_all$diag2, "_",
+                                                   df_hospitalstay_all$diag3)
+df_stent$id_beginDate_endDate <- paste0(df_stent$id, "_", 
+                                        df_stent$stent_begin_date, "_",
+                                        df_stent$stent_end_date, "_",
+                                        df_stent$diag1, "_",
+                                        df_stent$diag2, "_",
+                                        df_stent$diag3)
+stopifnot(
+  length(df_hospitalstay_all$id_beginDate_endDate) ==
+    length(unique(df_hospitalstay_all$id_beginDate_endDate)),
+  length(df_stent$id_beginDate_endDate) ==
+    length(unique(df_stent$id_beginDate_endDate))
+)
+
+
+## check if larger data set (df_hospitalstay_all) contains the smaller one (df_stent)
+stopifnot(all(df_stent$id_beginDate_endDate %in% df_hospitalstay_all$id_beginDate_endDate))
+
+
+## Do the merge
+df_hospitalstay_merged <- merge(x=df_hospitalstay_all,
+                                y=df_stent[,c("stent_id", "diag1", "diag2", "diag3", "stent_date", "mel1", "mel2", "mel3", "mel4", "mel5",
+                                              "IsStent_hospitalstay", "id_beginDate_endDate")],
+                                all.x = TRUE, by="id_beginDate_endDate") %>% arrange(as.numeric(id))
+stopifnot(
+  nrow(df_hospitalstay_merged) == nrow(df_hospitalstay_all)
+)
+df_hospitalstay_merged$IsStent_hospitalstay[is.na(df_hospitalstay_merged$IsStent_hospitalstay)] <- FALSE
+
+
+## Check if merge was sucessfull
+all(df_hospitalstay_merged[df_hospitalstay_merged$IsStent_hospitalstay,"diag1.x"] == df_hospitalstay_merged[df_hospitalstay_merged$IsStent_hospitalstay,"diag1.y"])
+all(df_hospitalstay_merged[df_hospitalstay_merged$IsStent_hospitalstay,"diag2.x"] == df_hospitalstay_merged[df_hospitalstay_merged$IsStent_hospitalstay,"diag2.y"])
+all(df_hospitalstay_merged[df_hospitalstay_merged$IsStent_hospitalstay,"diag3.x"] == df_hospitalstay_merged[df_hospitalstay_merged$IsStent_hospitalstay,"diag3.y"])
+idx <- df_hospitalstay_merged$IsStent_hospitalstay
+stopifnot( # Comment-AI: Catch potential problems
+  all(df_hospitalstay_merged$diag1.x[idx] ==
+      df_hospitalstay_merged$diag1.y[idx] |
+      is.na(df_hospitalstay_merged$diag1.x[idx]) |
+      is.na(df_hospitalstay_merged$diag1.y[idx])),
+
+  all(df_hospitalstay_merged$diag2.x[idx] ==
+      df_hospitalstay_merged$diag2.y[idx] |
+      is.na(df_hospitalstay_merged$diag2.x[idx]) |
+      is.na(df_hospitalstay_merged$diag2.y[idx])),
+
+  all(df_hospitalstay_merged$diag3.x[idx] ==
+      df_hospitalstay_merged$diag3.y[idx] |
+      is.na(df_hospitalstay_merged$diag3.x[idx]) |
+      is.na(df_hospitalstay_merged$diag3.y[idx]))
+)
+
+
+## Check number of remaining ids per file
+sapply(X=list(df_patients=df_patients, 
+              df_hospitalstay_merged = df_hospitalstay_merged,
+              df_hospitalstay_all = df_hospitalstay_all,
+              df_stent = df_stent,
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% unique() %>% length()
+       })
+
+
+
+## Remove redundant objects
+rm(list=c("df_stent", "df_hospitalstay_all", "idx"))
+
+
+# still 26237 patients remain (no changes in this code block)
+
+```
+
+```{r Convert date column vectors into dates}
+
+
+## Do some preliminary checks (Comment-AI)
+stopifnot(!any(is.na(as.numeric(df_hospitalstay_merged$id))))
+stopifnot(!any(is.na(as.numeric(df_patients$id))))
+stopifnot(!any(is.na(as.numeric(df_redemptions$id))))
+
+
+## Administrative Censoring date
+censoringDate <- as.Date("31/12/2024", format = "%d/%m/%Y")
+
+
+## Convert dates in df_hospitalstay_merged
+df_hospitalstay_merged <- df_hospitalstay_merged %>% dplyr::mutate(beginDate_asDate = as.Date(cohosp_begin_date, format="%d.%m.%Y"),
+                                                             endDate_asDate = as.Date(cohosp_end_date, format="%d.%m.%Y"))
+
+
+## Convert dates in df_patients
+df_patients <- df_patients %>% dplyr::mutate(birthDate_asDate = as.Date(paste0("30/06/", birth_year), format="%d/%m/%Y"),
+                                             deathDate_asDate = as.Date(death_date, format = "%d/%m/%Y"))
+
+
+## Convert dates in df_redemptions
+df_redemptions <- df_redemptions %>% mutate(redemptionDate_asDate = as.Date(redemption_date, format="%d.%m.%Y"))
+
+
+## Do some checks (Comment-AI)
+stopifnot(!any(is.na(df_hospitalstay_merged$beginDate_asDate)))
+stopifnot(!any(is.na(df_hospitalstay_merged$endDate_asDate)))
+stopifnot(!any(is.na(df_redemptions$redemptionDate_asDate)))
+stopifnot(!any(is.na(df_patients$birthDate_asDate)))
+
+
+## Arrange dataframes by id and then by date
+df_hospitalstay_merged <- df_hospitalstay_merged %>% arrange(as.numeric(id), beginDate_asDate)
+df_patients <- df_patients %>% arrange(as.numeric(id))
+df_redemptions <- df_redemptions %>% arrange(as.numeric(id), redemptionDate_asDate)
+
+
+## Check number of remaining ids per file
+sapply(X=list(df_patients=df_patients, 
+              df_hospitalstay_merged = df_hospitalstay_merged,
+              df_redemptions = df_redemptions),
+       FUN=function(df){
+         res <- df$id %>% unique() %>% length()
+       })
+
+
+```
+
+
+```{r For each id, find Pooled index hospitalization periods within the allowed time window with both stent and ACS attributes}
+
+## Note: Pooled Index Hospitalizations are defined as consecutive hospital stays no less than 30 days apart from each other within the following time period:
+## On or after October 1st 2020 and discharged by December 31st 2022 (i.e., within "relevant hospitalization period")
+
+
+
+## Initiate list for pooled index hospitalizations 
+list_pooledIndexHosp <- list()
+
+
+## Loop over each individual in df_patients and find all possible pooled index hospitalizations (as listed in df_hospital_merged)
+for(i in 1:nrow(df_patients)){
+  
+  # get id of patient
+  id_i = df_patients$id[i]
+  
+  # Calculate which hospital stays are within range of the "relevant hospitalization period" (hospitalization on or after October 1st 2020 and discharged by December 31st 2022)
+  df_hospitalstay_merged_i <- df_hospitalstay_merged %>% filter(id == id_i)
+  df_hospitalstay_merged_i$bool_afterStart <- df_hospitalstay_merged_i$beginDate_asDate >= as.Date("01.10.2020", format="%d.%m.%Y")
+  df_hospitalstay_merged_i$bool_beforeEnd <- df_hospitalstay_merged_i$endDate_asDate <= as.Date("31.12.2022", format="%d.%m.%Y")
+  
+  # filter for all the hospital stays that are within the "relevant hospitalization period" (Inclusion criterion 2)
+  df_hospitalstay_merged_i_filtered <- df_hospitalstay_merged_i %>% filter(bool_afterStart & bool_beforeEnd)
+  if(nrow(df_hospitalstay_merged_i_filtered) == 0) next
+  
+  # calculate distance between subsequent hospital stays measured in days (Comment-studyteam: I got clarification on how a pooled index hospitalization can start by asking per email)
+  stopifnot(all(order(df_hospitalstay_merged_i_filtered$beginDate_asDate) == seq_len(nrow(df_hospitalstay_merged_i_filtered)))) # Comment-AI
+  df_hospitalstay_merged_i_filtered <- df_hospitalstay_merged_i_filtered %>% 
+                                          mutate(
+                                            days_until_next_stay = as.numeric(lead(beginDate_asDate) - endDate_asDate)
+                                          )
+  
+  # Comment-AI: Define distinct pooled index hospitalization stays. AI checked the code and suggested coalesce() as a way to code more defensively
+  df_hospitalstay_merged_i_filtered$indexHosp <- c(1,  # First stay is always contained within first pooled index hospitalizaion
+                                                   1 + cumsum(coalesce(df_hospitalstay_merged_i_filtered$days_until_next_stay > 30, FALSE))[-nrow(df_hospitalstay_merged_i_filtered)]
+                                                   )  # note:  Subsequent hospital stays always initiate a new index period i<-i+1 if the time between previous and current stay surpassed 30 days
+  
+  # Check if code works (Comment-AI)
+  stopifnot(
+  length(df_hospitalstay_merged_i_filtered$indexHosp) ==
+    nrow(df_hospitalstay_merged_i_filtered)
+  )
+  
+  # check which of these pooled index hospital stays contains at least one stent and at least one ACS 
+  df_ifAny <- df_hospitalstay_merged_i_filtered %>%
+                                  group_by(indexHosp) %>%
+                                  summarise(
+                                      any_stent = any(IsStent_hospitalstay),
+                                      any_ACS = any(IsACS_hospitalstay)
+                                  )
+  v_indexHosp_keep <- df_ifAny %>% mutate(both_stent_and_ACS = (any_stent) & (any_ACS))  %>% 
+                                   filter(both_stent_and_ACS) %>% 
+                                   pull(indexHosp)
+  
+  # now filter for those pooled index hospital stays that meet the requirements of stent and ACS. Skip to next individual if length is 0
+  df_hospitalstay_merged_i_filtered <- df_hospitalstay_merged_i_filtered %>% filter(indexHosp %in% v_indexHosp_keep)
+  if(nrow(df_hospitalstay_merged_i_filtered) == 0) next
+  
+  
+  # convert empty character entries "" to NA in the diagnosis columns
+  df_hospitalstay_merged_i_filtered$diag1.x[df_hospitalstay_merged_i_filtered$diag1.x == ""] <- NA
+  df_hospitalstay_merged_i_filtered$diag2.x[df_hospitalstay_merged_i_filtered$diag2.x == ""] <- NA
+  df_hospitalstay_merged_i_filtered$diag3.x[df_hospitalstay_merged_i_filtered$diag3.x == ""] <- NA
+  
+
+  # add information on the number of relevant ICD10 comorbidity codes during each pooled index hospitalization (required as covariate adjustment later)
+  df_indexHospStays_i <- df_hospitalstay_merged_i_filtered %>% 
+  group_by(indexHosp) %>% 
+  summarise(
+    id = first(id),
+    startDate = min(beginDate_asDate),
+    endDate = max(endDate_asDate),
+    number_com_ICD__hosp = {
+      icd <- c_across(c(diag1.x, diag2.x, diag3.x))
+      n_distinct(icd[icd %in% v_ICD_com], na.rm = TRUE) # Comment-AI: AI suggestion replacing the original for-loop I coded for step
+    },
+    days_in_hosp__hosp = {
+      timediffs <- as.numeric(1 + endDate_asDate - beginDate_asDate)
+      sum(timediffs, na.rm = TRUE)
+    },
+    .groups = "drop"
+  )
+  
+  # save pooled index hospital stays (note: at this point one id may contribute multiple pooled index hospital stays with both stent and ACD attributes)
+  list_pooledIndexHosp[[length(list_pooledIndexHosp) + 1]] <-  df_indexHospStays_i
+}
+
+
+## Convert list elements of pooled index hospital stays into a dataframe
+df_pooledHosp <- do.call(args=list_pooledIndexHosp, what=rbind)
+
+
+## Add all relevant columns from df_patients to df_pooledHosp
+df_pooledHosp <- merge(x=df_pooledHosp, y=df_patients[,c("id", "sex", "birthDate_asDate", "deathDate_asDate")], all.x = TRUE, by="id") %>% arrange(as.numeric(id), startDate) 
+
+
+## Add age in years at the start of pooled index hospitalization period. 
+df_pooledHosp$age_in_years <- (as.numeric(df_pooledHosp$startDate - df_pooledHosp$birthDate_asDate)/365.25) %>% round(., digits=2)
+
+
+## Add year of the start of the pooled index hospitalization
+df_pooledHosp$year_of_start <- format(df_pooledHosp$startDate, "%Y") %>% as.character() %>% factor()
+
+
+## Check number of distinct index hosp stays and ids
+nrow(df_pooledHosp) # 25285 distinct index hospital stays across 24464 ids
+df_pooledHosp$id %>% unique() %>% length()
+
+
+## Save session (Stop_A)
+fname <- paste0("Rsession_StopA", Sys.Date(), ".RData")
+save.image(file = fname)
+#load("Rsession_2026-01-12.RData")
+
+
+## Remove some redundant objects
+rm(list=c("df_hospitalstay_merged_i", "df_hospitalstay_merged_i_filtered",
+          "df_ifAny", "df_indexHospStays_i", "list_pooledIndexHosp", "i", "id_i", "v_indexHosp_keep", "fname"))
+
+
+```
+
+
+```{r Filter out pooled index hospital stays based on remaining inclusion and exclusion criteria}
+
+## Inclusion criterion 1: At least age 18 at the start of the pooled index hospitalization period -------------
+
+# summary and filter
+df_pooledHosp$age_in_years %>% summary()
+df_pooledHosp <- df_pooledHosp %>% filter(age_in_years >= 18) # 25232 distinct pooled index hospital stays remain
+
+
+
+
+## -------------------------------
+
+## Inclusion criterion 5: redemption of a P2Y12 inhibitor between the start of the index hospitalization and 30 days after discharge (indicated by ATC codes in v_ATC)
+## Exclusion criterion 3: redemption of one of the three P2Y12 inhibitors in the 12 months before the  start of the index hospitalization
+
+
+## Create unique id for each entry in df_pooledHosp by concatenating id and indexHosp
+df_pooledHosp$id_indexHosp <- paste0(df_pooledHosp$id, "_", df_pooledHosp$indexHosp)
+
+
+## Initiate list that stores which of the P2Y12 inhibitors were used between start of index hosp and 30 days after discharge, as well as in the 12 month period up to the start of the pooled index hospitalization period
+l_inhibitors_before <- setNames(vector("list", nrow(df_pooledHosp)), nm=df_pooledHosp$id_indexHosp)
+l_inhibitors_after <- setNames(vector("list", nrow(df_pooledHosp)), nm=df_pooledHosp$id_indexHosp)
+
+
+## Go over each unique id in df_pooledHosp and save the corresponding inhibitors redeemed 
+for (i in df_pooledHosp$id_indexHosp){
+  
+  # extract row i
+  df_pooledHosp_i <- df_pooledHosp %>% filter(id_indexHosp == i)
+  stopifnot(nrow(df_pooledHosp_i) == 1)
+  
+  # extract id of row i, id_indexHosp, as well as start and end date of pooled index hospitalization 
+  id_i <- df_pooledHosp_i$id
+  start_i <- df_pooledHosp_i$startDate
+  end_i <- df_pooledHosp_i$endDate
+  
+  # extract df_redemption_i
+  df_redemptions_i <- df_redemptions %>% filter(id == id_i)
+  
+  # filter for redemptions before start
+  v_ATC_i_before <- df_redemptions_i %>% 
+                              filter(redemptionDate_asDate >= (start_i - 365.25),
+                                     redemptionDate_asDate < start_i) %>% 
+                              filter(ATC %in% v_ATC) %>% pull(ATC) %>% unique()
+  if(length(v_ATC_i_before) > 0){l_inhibitors_before[[i]] <- v_ATC_i_before}
+  # filter for redemptions after start until start + 30 days
+  v_ATC_i_after <- df_redemptions_i %>% 
+                              filter(redemptionDate_asDate >= (start_i),
+                                     redemptionDate_asDate <= (end_i + 30)) %>% 
+                              filter(ATC %in% v_ATC) %>% pull(ATC) %>% unique()
+  if(length(v_ATC_i_after) > 0){l_inhibitors_after[[i]] <- v_ATC_i_after}
+}
+
+
+
+## Convert list output into dataframes that indicate which drug was used either before or after
+stopifnot(all(df_pooledHosp$id_indexHosp %in% names(l_inhibitors_before)))
+stopifnot(all(df_pooledHosp$id_indexHosp %in% names(l_inhibitors_after)))
+df_before <- list_to_logical_df(l_inhibitors = l_inhibitors_before, v_ATC = v_ATC)
+df_after <- list_to_logical_df(l_inhibitors = l_inhibitors_after, v_ATC = v_ATC)
+stopifnot(identical(df_before$id_indexHosp, df_after$id_indexHosp) && identical(df_after$id_indexHosp, df_pooledHosp$id_indexHosp))
+
+
+## Filter out those pooled index hospitalizations that meet exclusion criterion 3 (i.e., at least one of the three inhibitors was redeemed within 12 months before hospital start)
+bool_kick <- df_before[,v_ATC] %>% as.matrix() %>% apply(., MARGIN=1, FUN=any)
+v_ids_keep <- df_before[!bool_kick, "id_indexHosp"]
+df_before <- df_before %>% filter(id_indexHosp %in% v_ids_keep)
+df_after <- df_after %>% filter(id_indexHosp %in% v_ids_keep)
+df_pooledHosp <- df_pooledHosp %>% filter(id_indexHosp %in% v_ids_keep)
+stopifnot(identical(df_before$id_indexHosp, df_after$id_indexHosp) && identical(df_after$id_indexHosp, df_pooledHosp$id_indexHosp))
+dim(df_pooledHosp) # 21478 pooled hospital stays remaining 
+
+
+## Filter for those pooled index hospitalizations that meet inclusion criterion 5 (i.e., exactly one inhibitor was redeemed in the period between pooled index hospitalsray start and end + 30)
+bool_any <- df_after[, v_ATC] %>% as.matrix() %>% apply(., MARGIN = 1, FUN=any)
+sum_bool <- df_after[, v_ATC] %>% as.matrix() %>% apply(., MARGIN = 1, FUN=sum)
+bool_keep_combined <- bool_any & (sum_bool==1) # Comment-decision: Kept those pooled index hospital stays with exactly 1 inhibitor used (i.e., not 2 or three)
+v_ids_keep <- df_after[bool_keep_combined, "id_indexHosp"]
+df_before <- df_before %>% filter(id_indexHosp %in% v_ids_keep)
+df_after <- df_after %>% filter(id_indexHosp %in% v_ids_keep)
+df_pooledHosp <- df_pooledHosp %>% filter(id_indexHosp %in% v_ids_keep)
+stopifnot(identical(df_before$id_indexHosp, df_after$id_indexHosp) && identical(df_after$id_indexHosp, df_pooledHosp$id_indexHosp))
+dim(df_pooledHosp) # 20598 pooled hospital stays remaining
+
+
+## Now save which of the inhibitors was redeemed for each pooled index hospital stay
+stopifnot(all(rowSums(df_after[, v_ATC]) == 1))
+stopifnot(all(!is.na(df_after[, v_ATC])))
+df_after$inhibitor <- df_after[,v_ATC, drop=FALSE] %>% as.matrix() %>% apply(., MARGIN=1, FUN=function(x){v_ATC[which(x)]})
+df_pooledHosp$inhibitor <- df_after$inhibitor
+stopifnot(all(df_pooledHosp$id_indexHosp == df_after$id_indexHosp))
+
+
+## Save session
+fname <- paste0("Rsession_StopB", Sys.Date(), ".RData")
+save.image(file = fname)
+#load("Rsession_2026-01-12.RData")
+load("Rsession_StopB2026-01-12.RData")
+
+## Remove redundant objects
+rm(list=c("df_after", "df_before", "df_pooledHosp_i", "df_redemptions_i", "l_inhibitors_after", "l_inhibitors_before",
+          "bool_any", "bool_keep_combined", "bool_kick","end_i", "fname", "i", "id_i", 
+          "i", "start_i", "sum_bool", "v_ATC_i_after", "v_ATC_i_before", "v_ids_keep"))
+
+
+
+
+## -------------------------------
+
+## Exclusion criterion 1: Diagnosis of ACS in the 12 months before the index hospitalization (eligibility period)
+## Exclusion criterion 2: Stent implantation in the 12 months before the index hospitalization (eligibility period)
+## In addition: find total number of redeemed medications in eligibility period (Comment-decision: I will interpret the SAP here as "total unique medications". This variable will later be used as a covariate for adjustment)
+## In addition: find date of subsequent ACS after end of index hospitalization
+
+
+## initiate list
+l_eligibility <- setNames(vector("list", nrow(df_pooledHosp)), nm=df_pooledHosp$id_indexHosp)
+
+## Loop over each pooled index hospitalization and find which ids meet the exclusion criteria
+for (i in df_pooledHosp$id_indexHosp){
+  
+  # extract row i
+  df_pooledHosp_i <- df_pooledHosp %>% filter(id_indexHosp == i)
+  
+  # extract id of row i, id_indexHosp, as well as start and end date of pooled index hospitalization 
+  id_i <- df_pooledHosp_i$id
+  start_i <- df_pooledHosp_i$startDate
+  end_i <- df_pooledHosp_i$endDate
+  
+  
+  # extract all hospital stays for individual id_i
+  df_hospitalstay_merged_i <- df_hospitalstay_merged %>% filter(id == id_i)
+  stopifnot(nrow(df_hospitalstay_merged_i) >0) # must be true; else code above is bugged
+  
+  
+  
+  # filter for those hospital days with ACS after end of pooled index hospitalization + 30 days. Save date of first reccurence (NA if there is none)
+  df_recurrent_ACS_i <- df_hospitalstay_merged_i %>% 
+                                filter(beginDate_asDate > (end_i + 30),
+                                       IsACS_hospitalstay)
+  if(nrow(df_recurrent_ACS_i)==0){
+    recurrentACSDate_asDate_i = as.Date(NA)} 
+  else {
+    recurrentACSDate_asDate_i = min(df_recurrent_ACS_i$beginDate_asDate)
+  }
+  
+  
+  # filter for those hospital stays within eligibility period
+  df_hospitalstay_merged_i_filtered <- df_hospitalstay_merged_i %>%
+                                          filter(endDate_asDate >= (start_i - 365), endDate_asDate < start_i)
+  
+  # check if there is any hospital stay in the eligibility period. Calculate relevant variables accordingly
+  if (nrow(df_hospitalstay_merged_i_filtered) == 0){
+    df_hospitalstay__eligibility_i <- data.frame(
+                                          id_indexHosp = i,
+                                          recurrent_ACSDate_asDate = recurrentACSDate_asDate_i,
+                                          days_in_hosp__eligibility = 0,
+                                          ACS__eligibility = 0,
+                                          stent__eligibility = 0,
+                                          number_com_ICD__eligibility = 0 # number of ICDs in the eligibility period 
+                                      )
+  } else{
+    df_hospitalstay_merged_i_filtered$beginDate_asDate[df_hospitalstay_merged_i_filtered$beginDate_asDate < (start_i - 365)] <- (start_i - 365) # if any hospitalstay starts before the eligibility period, reset its start to begin of eligibility period
+    df_hospitalstay__eligibility_i <- data.frame(
+                                            id_indexHosp = i,
+                                            recurrent_ACSDate_asDate = recurrentACSDate_asDate_i,
+                                            days_in_hosp__eligibility = sum(as.numeric((df_hospitalstay_merged_i_filtered$endDate_asDate + 1) - (df_hospitalstay_merged_i_filtered$beginDate_asDate))),
+                                            ACS__eligibility = df_hospitalstay_merged_i_filtered$IsACS_hospitalstay %>% any() %>% as.integer(),
+                                            stent__eligibility = df_hospitalstay_merged_i_filtered$IsStent_hospitalstay %>% any() %>% as.integer(),
+                                            number_com_ICD__eligibility = df_hospitalstay_merged_i_filtered %>% summarise(   
+                                                                                     number_com_ICD__eligibility_i = {
+                                                                                           icd <- c_across(c(diag1.x, diag2.x, diag3.x))
+                                                                                           n_distinct(icd[icd %in% v_ICD_com], na.rm = TRUE) 
+                                                                                     }) %>% pull(number_com_ICD__eligibility_i)
+                                     )
+    stopifnot(length(df_hospitalstay__eligibility_i$number_com_ICD__eligibility) == 1)
+  }
+  stopifnot(nrow(df_hospitalstay__eligibility_i) == 1)
+  
+  
+  # extract all redemptions for individual di_i. Then filter for those redeptions within the eligibility period
+  df_redemptions_i <- df_redemptions %>% filter(id == id_i)
+  stopifnot(nrow(df_redemptions_i)>0) # must be true; else code above is bugged
+  df_redemptions_i_filtered <- df_redemptions_i %>% 
+                                      filter(redemptionDate_asDate >= (start_i - 365), redemptionDate_asDate < start_i)
+  
+  # check if there are any redemptions in the eligibility period. Calculate relevant variables accordingly
+  if (nrow(df_redemptions_i_filtered)==0){
+    df_redemptions__eligibility_i <- data.frame(
+                                            total_redemptions__eligibility = 0,
+                                            A10A = 0,
+                                            A10B = 0,
+                                            B01 = 0,
+                                            R01 = 0,
+                                            R03 = 0,
+                                            C01 = 0,
+                                            C02 = 0,
+                                            C03 = 0,
+                                            C07 = 0,
+                                            C08 = 0,
+                                            C09 = 0,
+                                            C10 = 0
+      
+                                     )
+    
+  } else{
+    df_redemptions__eligibility_i <- data.frame(
+                                            total_redemptions__eligibility = df_redemptions_i_filtered$ATC %>% unique() %>% length(), # Comment-decision: I use unique() here which I think makes more sense. SAP not clear on that
+                                            A10A = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^A10A.*") %>% any() %>% as.integer(),
+                                            A10B = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^A10B.*") %>% any() %>% as.integer(),
+                                            B01 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^B01.*") %>% any() %>% as.integer(),
+                                            R01 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^R01.*") %>% any() %>% as.integer(),
+                                            R03 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^R03.*") %>% any() %>% as.integer(),
+                                            C01 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C01.*") %>% any() %>% as.integer(),
+                                            C02 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C02.*") %>% any() %>% as.integer(),
+                                            C03 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C03.*") %>% any() %>% as.integer(),
+                                            C07 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C07.*") %>% any() %>% as.integer(),
+                                            C08 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C08.*") %>% any() %>% as.integer(),
+                                            C09 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C09.*") %>% any() %>% as.integer(),
+                                            C10 = df_redemptions_i_filtered$ATC %>% grepl(x=., pattern="^C10.*") %>% any() %>% as.integer()
+                                      )
+  }
+  l_eligibility[[i]] <- cbind(df_hospitalstay__eligibility_i, df_redemptions__eligibility_i)
+}
+
+## Convert list to dataframe. Then merge with df_pooledHosp
+df_eligibility <- do.call(args=l_eligibility, what=rbind)
+dim(df_eligibility) # 20598 pooled index hosp
+stopifnot(all(df_eligibility$id_indexHosp == df_pooledHosp$id_indexHosp))
+v_names_missing <- names(df_eligibility)[!(names(df_eligibility) %in% names(df_pooledHosp))]
+df_pooledHosp <- cbind(df_pooledHosp, df_eligibility[,v_names_missing])
+
+
+## Filter out ids that have stent in eligibility perid (Exclusion criterion 2)
+df_pooledHosp <- df_pooledHosp %>% filter(stent__eligibility == 0)
+dim(df_pooledHosp) # 20595 pooled index hosp remain
+
+
+## Filter out ids with ACS during eligibility period (Ecxlusion criterion 1)
+df_pooledHosp <- df_pooledHosp %>% filter(ACS__eligibility == 0)
+dim(df_pooledHosp) # 20061 pooled index hosp remain
+
+
+## Save session
+fname <- paste0("Rsession_StopC", Sys.Date(), ".RData")
+save.image(file = fname)
+#load("Rsession_2026-01-12.RData")
+
+
+## Remove redundant objects
+rm(list=c("df_eligibility", "df_hospitalstay__eligibility_i", "df_hospitalstay_merged_i", "df_recurrent_ACS_i", "recurrentACSDate_asDate_i",
+          "df_hospitalstay_merged_i_filtered", "df_pooledHosp_i", "df_redemptions__eligibility_i",
+          "df_redemptions_i", "df_redemptions_i_filtered", "l_eligibility", "end_i",
+          "fname", "i", "id_i", "start_i", "v_names_missing", "df_hospitalstay_merged_i"))
+
+
+
+
+
+
+
+## -------------------------------
+
+## Exclusion criterion 4: observation period shorter than 30 days after discharge of the index hospitalization (due to ACS, presumably)
+## Exclusion criterion 5: death within 30 days after discharge of the index hospitalization
+
+
+## Define time 0
+df_pooledHosp$time_0 <- df_pooledHosp$endDate + 30
+
+
+## Define date of potential administrative censoring (either at 3 years after time 0 or on 31st december 2024)
+df_pooledHosp$potential_adminCensoringDate  <- pmin(df_pooledHosp$time_0 + 3*365.25, as.Date("2024-12-31"))
+
+
+## Add event date to df_pooledHosp (minimum of death date, recurrent ACS date, or administrative censoring date either at the end of 3 years follow-up or on 31st december 2024)
+df_pooledHosp$event_date <- pmin(
+  df_pooledHosp$deathDate_asDate,
+  df_pooledHosp$recurrent_ACSDate_asDate,
+  df_pooledHosp$potential_adminCensoringDate,
+  na.rm = TRUE
+)
+
+
+## Add last status indicator to df_pooledHosp
+df_pooledHosp$Death_UntilAdminCensoring <- ifelse(test = !is.na(df_pooledHosp$deathDate_asDate)  &  (df_pooledHosp$deathDate_asDate <= df_pooledHosp$potential_adminCensoringDate), yes=1, no=0)
+df_pooledHosp$ACSRecurrence_UntilAdminCensoring <- ifelse(test= !is.na(df_pooledHosp$recurrent_ACSDate_asDate) & (df_pooledHosp$recurrent_ACSDate_asDate <= df_pooledHosp$potential_adminCensoringDate), yes=1, no=0)
+df_pooledHosp$last_status <- ifelse(test = df_pooledHosp$Death_UntilAdminCensoring | df_pooledHosp$ACSRecurrence_UntilAdminCensoring, yes=1, no=0)
+check <- data.frame(time0 = df_pooledHosp$time_0,
+                    deathDate = df_pooledHosp$deathDate_asDate,
+                    recurrentACSDate = df_pooledHosp$recurrent_ACSDate_asDate,
+                    admincensoringDate = df_pooledHosp$potential_adminCensoringDate,
+                    event_date = df_pooledHosp$event_date,
+                    last_status = df_pooledHosp$last_status)
+stopifnot(all(!is.na(df_pooledHosp$event_date)))
+
+
+## Calculate time until event (either death, recurrent ACS, or censoring). Timepoint 0 is defined as 30 days after end of pooled index hospitalization. Then filter accordingly
+df_pooledHosp$time_to_event <- (df_pooledHosp$event_date - df_pooledHosp$time_0) %>% as.numeric()  # in days
+hist(as.numeric(df_pooledHosp$time_to_event))
+df_pooledHosp <- df_pooledHosp %>% filter(as.numeric(time_to_event) > 0) # Exclusion criteria 4 and 5
+dim(df_pooledHosp) # 19745 pooled index hospitalizations remaining
+
+
+## Remove redundant objects
+rm(list=c("check"))
+
+
+```
+
+
+```{r Investigate duplicate id}
+
+## Check if there there is an id that is listed twice in df_pooledHosp
+tab <- df_pooledHosp$id %>% table() 
+table(tab)
+id_dup <- names(tab[tab==2])
+
+
+## extract hosp stays for this id
+df_pooledHosp_i <- df_pooledHosp %>% filter(id == id_dup)
+df_pooledHosp_i
+df_hospitalstay_merged_i <- df_hospitalstay_merged %>% filter(id == id_dup)
+df_hospitalstay_merged_i
+
+
+## Comment-decision: I will leave the duplicated id "14731" in the data, as inclusion and exclusion criteria are met for both pooled index hospitalization periods.
+## Note: I hereby assume that the two separate time-to-event obvervations are somewhat independent
+
+
+## remove redundant objects
+rm(list=c("id_dup", "tab", "df_hospitalstay_merged_i", "df_pooledHosp_i"))
+
+```
+
+
+
+```{r Polish the remaining data and write table}
+
+## Subselect columns that are important
+df_export <- df_pooledHosp %>% dplyr::select(id, id_indexHosp, time_to_event, last_status, # general information
+                                             inhibitor, # treatment/exposure variable
+                                             age_in_years, sex, year_of_start, days_in_hosp__hosp, days_in_hosp__eligibility, 
+                                             number_com_ICD__hosp, number_com_ICD__eligibility, total_redemptions__eligibility, 
+                                             A10A, A10B, B01, R01, R03, C01, C02, C03, C07, C08, C09, C10) 
+
+## Write table
+write.table(df_export, file="../data/cleaned_data.csv", sep=",", col.names = TRUE, row.names=FALSE, quote=FALSE)
+
+
+```
+
+
+
+```{r}
+
+```
+
